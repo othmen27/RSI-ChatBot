@@ -1,0 +1,39 @@
+# Dependencies
+node_modules/
+
+# Environment variables (IMPORTANT - keeps your API keys safe)
+.env
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Runtime data
+pids/
+*.pid
+*.seed
+*.pid.lock
+
+# Coverage (if you ever add tests)
+coverage/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE files (VSCode)
+.vscode/
+
+# Optional: production build output (if you add later)
+dist/
+build/
+
+# PM2 logs (if using pm2)
+.pm2/
+
+# Temporary files
+tmp/
+temp/
