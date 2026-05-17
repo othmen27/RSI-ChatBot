@@ -2,6 +2,9 @@ import "dotenv/config";
 import TelegramBot from "node-telegram-bot-api";
 import axios from "axios";
 import fs from "fs";
+import { GoogleGenerativeAI } from "@google/generative-ai";
+import { GoogleAIFileManager } from "@google/generative-ai/server";
+import { tmpdir } from "os";
 import https from "https";
 import { fileURLToPath } from "url";
 import { dirname, join } from "path";
@@ -9,7 +12,8 @@ import { getDocument } from "pdfjs-dist/legacy/build/pdf.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const MEMORY_FILE = join(__dirname, "memory.json");
-
+const genAI = new GoogleGenerativeAI(process.env.GEMINI_KEY);
+const fileManager = new GoogleAIFileManager(process.env.GEMINI_KEY);
 const bot = new TelegramBot(process.env.BOT_TOKEN, { polling: true });
 const GROQ_URL = "https://api.groq.com/openai/v1/chat/completions";
 const MAX_HISTORY = 20;
@@ -126,6 +130,73 @@ bot.on("message", async (msg) => {
     return;
   }
 
+  // --- Video handling ---
+  if (msg.video || msg.video_note) {
+    await bot.sendChatAction(chatId, "typing");
+    const fileId = (msg.video || msg.video_note).file_id;
+    const mimeType = msg.video?.mime_type || "video/mp4";
+    const prompt = caption || "Describe what's happening in this video in detail.";
+
+    // Telegram bots can only download files up to 20MB
+    const fileSize = msg.video?.file_size || 0;
+    if (fileSize > 20 * 1024 * 1024) {
+      bot.sendMessage(chatId, "⚠️ Video is too large. Telegram bots can only download files up to 20MB.");
+      return;
+    }
+
+    // Save video to a temp file (Gemini File API needs a path)
+    const tmpPath = join(tmpdir(), `tg_video_${Date.now()}.mp4`);
+
+    try {
+      await bot.sendChatAction(chatId, "upload_video");
+
+      // Download from Telegram to temp file
+      const buffer = await downloadTelegramFile(fileId);
+      fs.writeFileSync(tmpPath, buffer);
+
+      // Upload to Gemini File API
+      bot.sendMessage(chatId, "⏳ Uploading video for analysis...");
+      const uploadResult = await fileManager.uploadFile(tmpPath, {
+        mimeType,
+        displayName: `video_${Date.now()}`,
+      });
+
+      // Wait for Gemini to finish processing the video
+      let file = await fileManager.getFile(uploadResult.file.name);
+      let attempts = 0;
+      while (file.state === "PROCESSING" && attempts < 30) {
+        await new Promise((r) => setTimeout(r, 3000)); // wait 3s
+        file = await fileManager.getFile(uploadResult.file.name);
+        attempts++;
+      }
+
+      if (file.state !== "ACTIVE") {
+        throw new Error(`Gemini file processing failed: ${file.state}`);
+      }
+
+      // Ask Gemini to analyze
+      const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
+      const result = await model.generateContent([
+        prompt,
+        { fileData: { mimeType, fileUri: file.uri } },
+      ]);
+
+      const reply = result.response.text();
+
+      // Clean up the uploaded file from Gemini
+      await fileManager.deleteFile(file.name);
+
+      addToHistory(chatId, "assistant", `[Video analysis]: ${reply}`);
+      bot.sendMessage(chatId, reply);
+    } catch (err) {
+      console.error(err.response?.data || err.message || err);
+      bot.sendMessage(chatId, "⚠️ Could not analyze the video. Try again.");
+    } finally {
+      // Always clean up temp file
+      try { fs.unlinkSync(tmpPath); } catch {}
+    }
+    return;
+  }
   // --- Image handling ---
   if (msg.photo) {
     await bot.sendChatAction(chatId, "typing");
